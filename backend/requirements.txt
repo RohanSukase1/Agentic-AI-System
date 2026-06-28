@@ -3,3 +3,4 @@ uvicorn
 groq
 httpx
 anyio
+python-dotenv
