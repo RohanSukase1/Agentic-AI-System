@@ -1,7 +1,9 @@
-from groq import AsyncGroq
-from config import GROQ_API_KEY, MODEL_NAME
 
-client = AsyncGroq(api_key=GROQ_API_KEY)
+from config import  MODEL_NAME
+import os
+from groq import AsyncGroq
+
+client = AsyncGroq(api_key=os.environ.get("GROQ_API_KEY"))
 
 
 # ---------------------------------------------------
