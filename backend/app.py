@@ -1,4 +1,6 @@
 import json
+import os
+from pathlib import Path
 from fastapi.staticfiles import StaticFiles
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
@@ -9,6 +11,8 @@ from utils.llm import chat
 from agents.planner_agent import create_plan
 
 orchestrator = Orchestrator()
+
+BASE_DIR = Path(__file__).parent
 
 app = FastAPI(
     title="Agentic AI System",
@@ -22,11 +26,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# ----------------------------------------------------
-# REMOVED: GET / was blocking the static file mount.
-# The static mount below now serves index.html at /
-# ----------------------------------------------------
 
 
 # ----------------------------------------------------
@@ -75,9 +74,6 @@ async def execute(request: PromptRequest):
 
 # ----------------------------------------------------
 # Streaming Execution (SSE)
-# FIX: Changed POST -> GET with query params.
-# EventSource in the browser only supports GET requests
-# and cannot send a request body.
 # ----------------------------------------------------
 
 @app.get("/execute/stream")
@@ -106,7 +102,7 @@ async def execute_stream(prompt: str, quality: int = 5):
 # ----------------------------------------------------
 # Static Frontend
 # MUST be last — routes defined above take priority.
-# Serves static/index.html at http://localhost:8000/
+# Uses absolute path so it works both locally and on Railway.
 # ----------------------------------------------------
 
-app.mount("/", StaticFiles(directory="static", html=True), name="static")
+app.mount("/", StaticFiles(directory=str(BASE_DIR / "static"), html=True), name="static")
