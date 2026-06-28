@@ -1,189 +1,193 @@
 # System Design Document
-## Agentic AI System for Multi-Step Tasks
+## Agentic AI System
 
 ---
 
-## 1. Overview
+## What is this system?
 
-This system takes a complicated request from a user, breaks it down into simple steps using a special tool called a Planning Agent. It then sends each step to a different expert agent - like a Retriever, Analyzer, or Writer - to get the job done. As each step is completed, it shares the results with the user right away. Finally, it puts all the pieces together to create a finished product, and if needed, it can even make some last-minute improvements to make sure everything is just right.
+This is an AI system where you type a complex request and it automatically figures out what steps to take, runs those steps using different specialized AI agents, and gives you a final written answer — all while showing you what's happening in real time.
 
-Our system is designed from the ground up, without using any pre-built frameworks that we can't see inside. Instead, we've written every part of it - from planning to routing, batching, retrying, streaming, and quality control - directly in Python and FastAPI. This means we have complete control over how everything works, and we can make sure each component does exactly what we need it to.
+For example if you type:
+> "Research Tesla and OpenAI, compare them, and write a LinkedIn post"
 
----
-
-## 2. Architecture
-
-### 2.1 High-Level Components
-
-```
-User Request
-│
-▼
-┌─────────────┐
-│  FastAPI    │  ← HTTP + Server-Sent Events (SSE)
-│  app.py     │
-└──────┬──────┘
-│
-▼
-┌─────────────────────────────────────────────┐
-│              Orchestrator                   │
-│                                             │
-│  ┌──────────────┐   ┌────────────────────┐  │
-│  │ Conversational│   │  Planner Agent     │  │
-│  │   Shortcut   │   │  (create_plan)     │  │
-│  └──────────────┘   └────────┬───────────┘  │
-│                              │ Plan (JSON)   │
-│                    ┌─────────▼──────────┐   │
-│                    │  Batch Scheduler   │   │
-│                    │  (Kahn's algorithm)│   │
-│                    └─────────┬──────────┘   │
-│                              │              │
-│           ┌──────────────────┼──────────────┤
-│           ▼                  ▼              ▼
-│   ┌───────────────┐  ┌───────────┐  ┌────────────┐
-│   │   Retriever   │  │ Analyzer  │  │   Writer   │
-│   │   Agent       │  │  Agent    │  │   Agent    │
-│   └───────────────┘  └───────────┘  └────────────┘
-│                                            │
-│                              ┌─────────────▼──────┐
-│                              │  Quality Pipeline  │
-│                              │  Critic → Improve  │
-│                              └─────────────┬──────┘
-└────────────────────────────────────────────┼───────┘
-│
-▼
-Final Answer
-(streamed via SSE)
-```
-
-### 2.2 Component Responsibilities
-
-| Component | File | Responsibility |
-|---|---|---|
-| FastAPI Server | `app.py` | Accepts HTTP requests, streams SSE events to the browser |
-| Coordinator | `coordinator.py` | This is the main part that controls all the other parts, it handles batches, retries, and streaming, making sure everything runs smoothly |
-| Planner Agent | `agents/planner_agent.py` | Decomposes user request into a structured JSON task plan |
-| Retriever Agent | `agents/retriever_agent.py` | Searches for and retrieves relevant information |
-| Analyzer Agent | `agents/analyzer_agent.py` | Compares, summarizes, and draws conclusions from retrieved data |
-| Writer Agent | `agents/writer_agent.py` | Produces the final written output; supports token streaming |
-| Critic Agent | `agents/critic_agent.py` | Reviews the draft and produces structured improvement feedback |
-| Quality Agent | `agents/quality_agent.py` | Improves the draft based on feedback from critics to reach a certain level of quality |
-| LLM Utility | `utils/llm.py` | Thin async wrapper around the Groq API |
-| Frontend | `index.html` | Single-page UI; renders the execution plan, streams tokens, shows metadata |
+The system will:
+1. Break that into 4 tasks automatically
+2. Search for Tesla info
+3. Search for OpenAI info
+4. Compare both
+5. Write the LinkedIn post
 
 ---
 
-## 3. Data Flow
-
-### 3.1 Normal Agentic Request
+## How it works (simple version)
 
 ```
-1. User types request → POST /stream (SSE endpoint)
-
-2. Orchestrator checks _is_conversational(request)
-└─ If greeting/trivial → _direct_chat() → stream reply → done
-└─ If agentic → continue
-
-3. Planner Agent called:
-└─ LLM produces JSON plan: [{step, agent, task, depends_on}, ...]
-The plan has been checked and it's good to go - there are no empty lists, no duplicate steps, and the steps are in the right order.
-└─ `plan` SSE event emitted → frontend renders execution timeline
-
-4. Batch Scheduler (Kahn's topological sort):
-└─ Tasks with no dependencies → Batch 1 (run concurrently)
-Here are the tasks that are ready to run at the same time, now that the things they depend on are done.
-└─ ... and so on
-
-5. For each batch:
-When multiple tasks are run at the same time using asyncio.gather, it calls the retrieve function all at once.
-└─ Analyzer tasks → analyze(task, results_snapshot) concurrently
-└─ Writer tasks   → stream_write(task, results_snapshot) sequentially
-└─ Each token → `token` SSE event → browser renders in real time
-
-6. Quality Pipeline (if quality >= 7):
-└─ critic(draft, quality)  → structured feedback
-└─ improve(draft, feedback, quality) → refined draft
-└─ Repeated N times based on quality level (1–3 passes)
-
-7. `metadata` SSE event → execution time, pass count, failure summary
-8. `final` SSE event     → full result object
+You type a request
+       ↓
+Planner reads it and makes a task list
+       ↓
+Tasks are sent to the right agents
+       ↓
+Retriever → finds information
+Analyzer  → compares / summarizes
+Writer    → writes the final output
+       ↓
+(Optional) Critic reviews it → Quality agent improves it
+       ↓
+Final answer shown to you
 ```
-
-### 3.2 SSE Event Types
-
-| Event Type | Payload | Frontend Action |
-|---|---|---|
-| `status` | `{agent, message}` | Updates status bar |
-| `plan` | `[{step, agent, task, depends_on}]` | Renders execution timeline |
-| `agent_complete` | `{agent, step}` | Marks timeline step as done |
-| `token` | `{content}` | Appends token to output area |
-| `writer_retry` | `{step, attempt, message}` | Shows retry notification |
-| `metadata` | `{quality_level, passes, execution_time, ...}` | Shows run summary |
-| `final` | `{plan, results, final_answer, metadata}` | Marks run complete |
 
 ---
 
-## 4. Key Design Decisions
+## The agents
 
-### 4.1 No Black-Box Framework
-The system does not use LangChain, AutoGen, CrewAI, or any similar framework. Every agent is a plain Python async function. The orchestrator, batching logic, retry policy, and SSE streaming are all written explicitly. This means every behavior is traceable, debuggable, and modifiable without reverse-engineering a framework.
+I built 6 agents. Each one has one job and does nothing else.
 
-### 4.2 Manual Batching with Topological Sort
-The planner emits a `depends_on` field per task. The orchestrator implements Kahn's BFS algorithm (no external library) to group tasks into levels — tasks in the same level have no dependency on each other and run concurrently via `asyncio.gather`. This maximises throughput without needing a task queue.
+**Planner**
+- Reads your request
+- Returns a JSON list of tasks with step numbers
+- Each task says which agent should do it and what it should do
 
-### 4.3 Classified Error Handling
-When things go wrong, mistakes can be grouped into five types before figuring out what to do next.
+**Retriever**
+- Gets a task like "research Tesla AI products"
+- Searches and returns relevant information as text
 
-| Class | Strategy |
+**Analyzer**
+- Gets a task like "compare Tesla and OpenAI"
+- Looks at what the Retriever found
+- Returns a summary or comparison
+
+**Writer**
+- Gets a task like "write a LinkedIn post based on the comparison"
+- Looks at all previous results
+- Writes the final content
+- Streams it word by word so you see it appear in real time
+
+**Critic**
+- Reviews the Writer's draft
+- Returns structured feedback (what's good, what's bad, what to fix)
+
+**Quality Agent**
+- Takes the draft + critic feedback
+- Rewrites it to be better
+- Only runs if quality level is 7 or above
+
+---
+
+## The Orchestrator
+
+This is the main file that controls everything. Think of it as the manager.
+
+It does these things in order:
+
+1. Checks if your message is just a greeting like "hello" — if yes, replies directly without running any agents
+2. Calls the Planner to get the task list
+3. Figures out which tasks can run at the same time (tasks with no dependencies run together)
+4. Runs each batch of tasks
+5. Sends each word of the Writer's output to your browser as it's generated
+6. Runs the quality pipeline if quality level is high enough
+7. Sends final metadata (how long it took, how many steps, any failures)
+
+---
+
+## How tasks run in parallel
+
+The Planner assigns a `depends_on` field to each task. For example:
+
+```
+Step 1 - Retriever - "Research Tesla"     - depends_on: []
+Step 2 - Retriever - "Research OpenAI"    - depends_on: []
+Step 3 - Analyzer  - "Compare both"       - depends_on: [1, 2]
+Step 4 - Writer    - "Write LinkedIn post" - depends_on: [3]
+```
+
+Steps 1 and 2 have no dependencies so they run at the same time.
+Step 3 waits for 1 and 2 to finish.
+Step 4 waits for 3 to finish.
+
+This saves time instead of running everything one by one.
+
+---
+
+## How streaming works
+
+Instead of waiting for the entire answer to be ready before showing it, the Writer sends each word to the browser as soon as it's generated using Server-Sent Events (SSE).
+
+SSE is basically a one-way connection where the server keeps pushing small messages to the browser. Each message is one word or chunk of text.
+
+The browser receives these and appends them to the output area in real time — so you see the text appearing as it's being written.
+
+---
+
+## Error handling
+
+If an agent fails, the system doesn't crash. It:
+
+1. Logs what went wrong
+2. Retries up to 2 times
+3. Waits a bit before retrying (longer wait if it's a rate limit error)
+4. If it still fails, marks that step as failed and moves on
+5. Shows you at the end which steps failed and why
+
+Different errors are handled differently:
+- Rate limit → wait and retry
+- Wrong API key → fail immediately, no point retrying
+- Timeout → retry with a short wait
+- Response too long → trim it and retry
+
+---
+
+## Quality levels
+
+The user picks a quality level from 1 to 10.
+
+| Level | What happens |
 |---|---|
-| `rate_limit` | Exponential back-off with full jitter, up to 60s, worth retrying |
-If you've exceeded your quota, trying again won't work. You've reached your limit, so you need to stop and figure out what to do next.
-| `auth` | Fail immediately — credentials problem |
-If the context is too long, try shortening it and then try again.
-| `timeout` | It has a moderate fixed delay and a small amount of jitter |
-| `unknown` | Linear back-off |
+| 1–6 | Just writes the draft, no review |
+| 7 | One round of critic + improve |
+| 8–9 | Two rounds of critic + improve |
+| 10 | Three rounds of critic + improve |
 
-This avoids wasting time retrying quota or auth errors and prevents thundering-herd on rate limits.
-
-### 4.4 Streaming Architecture
-The Writer agent relies on `stream_write()`, which is an asynchronous generator that produces tokens as it receives them from the LLM. As soon as each token is generated, it's immediately sent to the browser as an SSE event. To prevent stalled streams, an inactivity watchdog is used, which aborts the stream if there's no activity for a certain period of time - in this case, 30 seconds. If the `writer_complete` event is missing for some reason, the output is reconstructed from the token buffer as a fallback, ensuring that the output is still generated even if the stream is incomplete. This process helps to maintain a stable and continuous flow of data from the Writer agent to the browser.
-
-### 4.5 Quality Pipeline
-Quality is a user-controlled integer (1–10). The orchestrator maps this to:
-- A writer hint injected into the task description (calibrates the first draft)
-- A number of critic → improve passes (0 for quality ≤ 6, up to 3 for quality 10)
-- A tiered system prompt for both the critic and improve agents
+Higher quality = slower but better output.
 
 ---
 
-## 5. Deployment
+## Tech used
 
-| Layer | Technology |
+| What | Technology |
 |---|---|
-| Backend | Python 3.10, FastAPI, Uvicorn |
-| LLM Provider | Groq API (async client) |
-| Frontend | Vanilla HTML/CSS/JS, Server-Sent Events |
-| Hosting | Railway (auto-deploy from GitHub) |
-| Environment | `GROQ_API_KEY` via Railway environment variables |
+| Backend | Python, FastAPI |
+| LLM | Groq API |
+| Frontend | Plain HTML, CSS, JavaScript |
+| Streaming | Server-Sent Events (SSE) |
+| Hosting | Railway |
 
 ---
 
-## 6. Repository Structure
+## Folder structure
 
 ```
 agentic-ai/
-├── app.py                   # FastAPI server, SSE endpoint
-├── orchestrator.py          # Core coordination logic
-├── models.py                # Pydantic models (Plan, Task)
-├── requirements.txt
+├── app.py              ← server, handles HTTP requests
+├── orchestrator.py     ← controls all the agents
+├── models.py           ← defines what a Plan and Task look like
 ├── agents/
-│   ├── planner_agent.py     # Task decomposition
-│   ├── retriever_agent.py   # Information retrieval
-│   ├── analyzer_agent.py    # Analysis and comparison
-│   ├── writer_agent.py      # Content generation (streaming)
-│   ├── critic_agent.py      # Draft review
-│   └── quality_agent.py     # Draft improvement
+│   ├── planner_agent.py
+│   ├── retriever_agent.py
+│   ├── analyzer_agent.py
+│   ├── writer_agent.py
+│   ├── critic_agent.py
+│   └── quality_agent.py
 ├── utils/
-│   └── llm.py               # Groq async wrapper
-└── index.html               # Single-page frontend
+│   └── llm.py          ← sends requests to Groq API
+└── index.html          ← the frontend UI
 ```
+
+---
+
+## What I would improve with more time
+
+- Add memory so the system remembers previous conversations
+- Let users see which agent is running in more detail
+- Add support for file uploads so agents can read PDFs or documents
+- Better UI for showing which steps passed and which failed
