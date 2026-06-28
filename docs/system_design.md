@@ -19,7 +19,7 @@ The system will:
 
 ---
 
-## How it works (simple version)
+## How it works
 
 ```
 You type a request
@@ -34,7 +34,7 @@ Writer    → writes the final output
        ↓
 (Optional) Critic reviews it → Quality agent improves it
        ↓
-Final answer shown to you
+Final answer 
 ```
 
 ---
@@ -190,4 +190,5 @@ agentic-ai/
 - Add memory so the system remembers previous conversations
 - Let users see which agent is running in more detail
 - Add support for file uploads so agents can read PDFs or documents
+- 
 - Better UI for showing which steps passed and which failed
