@@ -76,20 +76,6 @@ http://127.0.0.1:8000
 
 ---
 
-## Project Structure
-
-```
-agents/
-utils/
-app.py
-orchestrator.py
-models.py
-requirements.txt
-README.md
-```
-
----
-
 ## Author
 
 **Rohan Sukase**
